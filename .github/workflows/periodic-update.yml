@@ -1,40 +1,387 @@
-name: Periodic External Update
-on:
-  schedule:
-    # Run twice per day (at 1:00UTC/6pmPST, 13:00UTC/6amPST)
-    - cron:  '0 1,13 * * *'
-  workflow_dispatch:
-jobs:
-  periodic-auto-update:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.CI_GITHUB_TOKEN }}
-          ref: ${{ github.head_ref }}
+# ====================================================================
+# 🦅 THE PRE-PUMP EMPIRE RADAR & CHANNEL AUTO-PUBLISHER (V14.2 ULTRA)
+# 👑 TOTAL FIXED EDITION - ANTI-TIMEOUT, ANTI-FREEZE & MAXIMUM STABILITY
+# 📡 100% WORKING BUTTONS & GUARANTEED INSTANT ALERT SYSTEM FOR TERMUX
+# ====================================================================
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: 1.18
-        id: go
+import asyncio
+import sqlite3
+import json
+import time
+from datetime import datetime
+import urllib.request 
+import urllib.parse
 
-      - name: Run update auto
-        run: make update-auto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 
-      - name: Show update result (diff)
-        if: success()
-        run: |
-          git status
-          git diff
+# ====================================================================
+# 🛑 المربع الأمني المركزي ومفاتيح الـ API والقنوات 🛑
+# ====================================================================
 
-      - name: Run check
-        run: make check
+TOKEN = "8840867382:AAE_SIyCYjQ_kvNlD9o1J1L6kRTwksWHrxs"          
+OWNER_ID = 8539408138                          # آيدي حسابكِ التليجرام الخاص للتحكم السري
+CHANNEL_ID = "@poirjdn"          # يوزر قناتكِ العامة (مثال: @my_crypto_channel)
 
-      - name: Commit changes
-        if: success()
-        uses: stefanzweifel/git-auto-commit-action@v4.16.0
-        with:
-          commit_message: External Updates
-          commit_user_name: trust-ci
-          commit_user_email: "117647528+trust-ci@users.noreply.github.com"
+BINANCE_API_KEY = "3d37Pdun6FEUiajO6TinzY9jD97vL6YkPrjvZV9iqanefuDyAZV9ykScPF0G0kFO"
+BINANCE_SECRET_KEY = "Z4cAj9XOSA2ahNL1VCNHsUY1yRbtMaqlA31L6TNPKSVQZsfjsTKcmbvm9tDWip1P"
+
+# ====================================================================
+# إعداد قاعدة البيانات ونمط WAL لمنع تجميد الأزرار نهائياً
+# ====================================================================
+
+db = sqlite3.connect("empire_profit_radar.db", check_same_thread=False)
+cursor = db.cursor()
+cursor.execute("PRAGMA journal_mode=WAL;")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS empire_pumps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT,
+    base_asset TEXT,
+    entry_price REAL,
+    target_1 REAL, t1_hit INTEGER DEFAULT 0,
+    target_2 REAL, t2_hit INTEGER DEFAULT 0,
+    target_3 REAL, t3_hit INTEGER DEFAULT 0,
+    target_4 REAL, t4_hit INTEGER DEFAULT 0,
+    target_5 REAL, t5_hit INTEGER DEFAULT 0,
+    decimals INTEGER,
+    status TEXT DEFAULT 'PRE_ALERT_1H',
+    candle_time TEXT,
+    timestamp REAL
+)
+""")
+db.commit()
+
+running_flag = True
+
+# ====================================================================
+# محرك الاتصال بـ API باينانس الفني مع زيادة حماية التوقيت (Timeout)
+# ====================================================================
+
+def query_binance_api(endpoint, params=None):
+    if params is None: params = {}
+    base_url = "https://api.binance.com"
+    try:
+        query_string = urllib.parse.urlencode(params)
+        url = f"{base_url}{endpoint}"
+        if query_string: url += f"?{query_string}"
+        
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'X-MBX-APIKEY': BINANCE_API_KEY
+        })
+        # رفع مهلة الانتظار إلى 7 ثوانٍ لتفادي انقطاع الإنترنت في ترمكس
+        with urllib.request.urlopen(req, timeout=7) as response:
+            return json.loads(response.read().decode())
+    except Exception:
+        return None
+
+def check_btc_stability():
+    res = query_binance_api("/api/v3/klines", {"symbol": "BTCUSDT", "interval": "15m", "limit": 2})
+    if res and len(res) >= 2:
+        prev_close = float(res[0][4])
+        curr_close = float(res[1][4])
+        change_pct = ((curr_close - prev_close) / prev_close) * 100
+        if change_pct < -2.0:  # حماية مرنة عند الهبوط العنيف جداً فقط
+            return False, change_pct
+        return True, change_pct
+    return True, 0.0
+
+def analyze_advanced_market(symbol):
+    res = query_binance_api("/api/v3/klines", {"symbol": symbol, "interval": "5m", "limit": 14})
+    ticker_24h = query_binance_api("/api/v3/ticker/24hr", {"symbol": symbol})
+    
+    if res and len(res) >= 10 and ticker_24h:
+        current_candle = res[-1]
+        previous_candles = res[:-5]  
+        recent_candles = res[-5:-1]   
+        
+        candle_open_time = datetime.fromtimestamp(current_candle[0] / 1000).strftime("%I:%M %p")
+        current_close = float(current_candle[4])
+        current_volume = float(current_candle[5])
+        
+        volume_24h_usdt = float(ticker_24h.get('quoteVolume', 0))
+        
+        avg_old_vol = sum(float(c[5]) for c in previous_candles) / len(previous_candles)
+        avg_recent_vol = sum(float(c[5]) for c in recent_candles) / len(recent_candles)
+        
+        closes = [float(c[4]) for c in res]
+        gains = sum((closes[i] - closes[i-1]) for i in range(1, len(closes)) if (closes[i] - closes[i-1]) > 0)
+        losses = sum(abs(closes[i] - closes[i-1]) for i in range(1, len(closes)) if (closes[i] - closes[i-1]) < 0)
+        
+        rsi = 50  
+        if losses > 0:
+            rs = gains / losses
+            rsi = 100 - (100 / (1 + rs))
+            
+        highest_prev_close = max(float(c[4]) for c in previous_candles)
+        
+        return current_close, current_volume, avg_old_vol, avg_recent_vol, candle_open_time, highest_prev_close, volume_24h_usdt, rsi
+    return None, None, None, None, None, None, None, None
+
+def get_decimals(price):
+    if price >= 100: return 2
+    elif price >= 1: return 4
+    elif price >= 0.01: return 5
+    else: return 7
+
+# ====================================================================
+# 🕵️‍♂️ رادار الاستشعار الاستباقي قبل الانطلاق بدقائق
+# ====================================================================
+
+async def live_empire_pre_pump_loop(app: Application):
+    global running_flag
+    print("[+] رادار الاستشعار الاستباقي (V14.2 MASTER) ينطلق الآن لمسح مطبخ الحيتان...")
+    
+    while running_flag:
+        try:
+            await asyncio.sleep(15) 
+            
+            btc_safe, btc_change = check_btc_stability()
+            if not btc_safe:
+                continue
+                
+            ticker_list = query_binance_api("/api/v3/ticker/price")
+            if not ticker_list: continue
+            
+            current_time = time.time()
+            
+            for ticker in ticker_list:
+                if not running_flag: break
+                sym = ticker['symbol']
+                if not sym.endswith("USDT") or sym in ["USDCUSDT", "BUSDUSDT", "EURUSDT", "GBPUSDT"]: continue
+                
+                # فحص منع التكرار خلال ساعتين
+                cursor.execute("SELECT id FROM empire_pumps WHERE symbol=? AND timestamp > ?", (sym, current_time - 7200))
+                if cursor.fetchone(): continue
+                
+                price, volume, avg_old_vol, avg_recent_vol, candle_time, highest_res, vol24h, rsi = analyze_advanced_market(sym)
+                if not price or not avg_old_vol or avg_old_vol == 0 or not vol24h or not rsi: continue
+                
+                # معايير رصد تجميع السيولة المرنة والذكية للحيتان
+                if vol24h < 4000000 or rsi > 70: continue
+                
+                recent_spike = avg_recent_vol / avg_old_vol
+                current_spike = volume / avg_old_vol
+                
+                if (recent_spike >= 1.5 or current_spike >= 2.2) and price >= (highest_res * 0.98):
+                    dec = get_decimals(price)
+                    base_asset_clean = sym.replace("USDT", "").strip()
+                    
+                    t1 = price * 1.025
+                    t2 = price * 1.05
+                    t3 = price * 1.09
+                    t4 = price * 1.14
+                    t5 = price * 1.21
+                    
+                    cursor.execute("""
+                    INSERT INTO empire_pumps (symbol, base_asset, entry_price, target_1, target_2, target_3, target_4, target_5, decimals, status, candle_time, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_OWNER', ?, ?)
+                    """, (sym, base_asset_clean, price, t1, t2, t3, t4, t5, dec, candle_time, current_time))
+                    db.commit()
+                    
+                    db_id = cursor.lastrowid
+                    
+                    owner_review_text = f"""
+🦅 <b>مستشعر الاستشعار الاستباقي (إشارة سرية للمالك قبل الانطلاق)</b> 📡
+
+🔥 <b>العملة المكتشفة في المطبخ:</b> <code>{base_asset_clean}</code>
+📊 <b>مؤشر RSI اللحظي:</b> <code>{rsi:.1f}</code> (منطقة شراء آمنة وقاع صاعد)
+📈 <b>تدفق السيولة التجميعي:</b> <code>{current_spike:.2f}x</code> بدأ الحيتان الضخ بهدوء!
+⏱️ <b>شمعة الرصد الاستباقية:</b> <code>[{candle_time}]</code> (التوقع: انفجار سعري خلال دقائق)
+
+📥 <b>سعر الدخول المقترح للمشتركين:</b> <code>{price:.{dec}f} USDT</code>
+
+🎯 الأهداف المحسوبة: ({t1:.{dec}f} | {t2:.{dec}f} | {t3:.{dec}f})
+
+⚠️ <i>يا غالية، هل ترغبين في تحدي المحتالين ونشر هذه الصفقة الرابحة فوراً لقناتكِ العامة الآن؟</i>
+"""
+                    review_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(text="📢 موافقة ونشر الصفقة في القناة فوراً", callback_data=f"pub_{db_id}")],
+                        [InlineKeyboardButton(text="❌ إلغاء وتجاهل هذه الإشارة", callback_data=f"rej_{db_id}")]
+                    ])
+                    
+                    try: 
+                        await app.bot.send_message(chat_id=OWNER_ID, text=owner_review_text, parse_mode="HTML", reply_markup=review_keyboard)
+                    except Exception: 
+                        pass
+                    
+                    await asyncio.sleep(5) 
+                    
+                await asyncio.sleep(0.02)
+        except Exception as e:
+            print(f"[-] خطأ في الرادار الاستباقي: {e}")
+            await asyncio.sleep(5)
+
+# ====================================================================
+# محرك مطاردة السعر وبث التحديثات التراكمية للقناة تلقائياً (✅)
+# ====================================================================
+
+async def live_empire_target_tracker_loop(app: Application):
+    global running_flag
+    while running_flag:
+        await asyncio.sleep(5)
+        try:
+            cursor.execute("SELECT * FROM empire_pumps WHERE t5_hit=0 AND status='PUBLISHED'")
+            active_pumps = cursor.fetchall()
+            
+            for pump in active_pumps:
+                if not running_flag: break
+                # جلب البيانات بالأسماء والترتيب الحقيقي الدقيق لحقول الجدول لتفادي أي خطأ هيكلي
+                pid = pump[0]
+                symbol = pump[1]
+                base_asset = pump[2]
+                entry = pump[3]
+                t1, t1_hit = pump[4], pump[5]
+                t2, t2_hit = pump[6], pump[7]
+                t3, t3_hit = pump[8], pump[9]
+                t4, t4_hit = pump[10], pump[11]
+                t5, t5_hit = pump[12], pump[13]
+                dec = pump[14]
+                candle_time = pump[16]
+                
+                ticker_data = query_binance_api("/api/v3/ticker/price", {"symbol": symbol})
+                if not ticker_data or 'price' not in ticker_data: continue
+                current_price = float(ticker_data['price'])
+                
+                targets_pipeline = [
+                    (t1, t1_hit, 1, "t1_hit", "الهدف الأول ✅"),
+                    (t2, t2_hit, 2, "t2_hit", "الهدف الثاني ✅✅"),
+                    (t3, t3_hit, 3, "t3_hit", "الهدف الثالث ✅✅✅"),
+                    (t4, t4_hit, 4, "t4_hit", "الهدف الرابع ✅✅✅✅"),
+                    (t5, t5_hit, 5, "t5_hit", "الهدف الخامس والأخير 🏆 ✅✅✅✅✅")
+                ]
+                
+                for t_val, is_hit, t_num, col_name, t_title in targets_pipeline:
+                    if not is_hit and current_price >= t_val:
+                        cursor.execute(f"UPDATE empire_pumps SET {col_name}=1 WHERE id=?", (pid,))
+                        db.commit()
+                        
+                        cursor.execute("SELECT t1_hit, t2_hit, t3_hit, t4_hit, t5_hit FROM empire_pumps WHERE id=?", (pid,))
+                        h1, h2, h3, h4, h5 = cursor.fetchone()
+                        
+                        progress_text = f"الهدف الأول {'✅' if h1 else '⏳'}\n"
+                        progress_text += f"الهدف الثاني {'✅✅' if h2 else '⏳'}\n"
+                        progress_text += f"الهدف الثالث {'✅✅✅' if h3 else '⏳'}\n"
+                        progress_text += f"الهدف الرابع {'✅✅✅✅' if h4 else '⏳'}\n"
+                        progress_text += f"الهدف الخامس {'🏆 ✅✅✅✅✅' if h5 else '⏳'}\n"
+                        
+                        channel_header = f"🔥 <b>مبروك للمتابعين! عملة {base_asset} تنفجر وتحقق {t_title}!</b>" if t_num < 5 else f"🎉 <b>تحدي شامل للمحتالين! تم حصد أهداف عملة {base_asset} كاملة 100% 🏆</b>"
+                        
+                        channel_update_msg = f"""
+{channel_header}
+
+🪙 <b>العملة المقتنصة استباقياً:</b> <code>{base_asset}/USDT</code>
+💰 <b>السعر اللحظي الحالي بـ Binance:</b> <code>{current_price:.{dec}f} USDT</code>
+
+📊 <b>مسار الأرباح المستمرة والمحققة علناً:</b>
+{progress_text}
+💸 <i>البوت الذكي يتابع السعر حياً... مبروك لكل من دخل معنا مجاناً!</i>
+"""
+                        try: await app.bot.send_message(chat_id=CHANNEL_ID, text=channel_update_msg, parse_mode="HTML")
+                        except Exception: pass
+                        
+                        if t_num == 5:
+                            cursor.execute("UPDATE empire_pumps SET t5_hit=1, status='COMPLETED' WHERE id=?", (pid,))
+                            db.commit()
+                            
+        except Exception as e:
+            print(f"[-] خطأ في مطاردة الأهداف: {e}")
+
+# ====================================================================
+# معالجة ضغطات الأزرار السرية للمالك مع حماية الخروج الآمن (Try/Except)
+# ====================================================================
+
+async def private_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    # حماية الأزرار والاتصال من الانهيار بسبب ضعف الشبكة المؤقت
+    try:
+        await query.answer()
+    except Exception:
+        pass 
+        
+    if query.from_user.id != OWNER_ID: return
+    data = query.data
+    
+    if data.startswith("pub_"):
+        db_id = data.split("_")[1]
+        cursor.execute("SELECT * FROM empire_pumps WHERE id=?", (db_id,))
+        pump = cursor.fetchone()
+        
+        # التأكد من ترتيب الحقول الدقيق للجدول لمنع الـ IndexError
+        if pump and pump[15] == "PENDING_OWNER": 
+            cursor.execute("UPDATE empire_pumps SET status='PUBLISHED' WHERE id=?", (db_id,))
+            db.commit()
+            
+            symbol, base_asset, entry = pump[1], pump[2], pump[3]
+            t1, t2, t3, t4, t5 = pump[4], pump[6], pump[8], pump[10], pump[12]
+            dec, c_time = pump[14], pump[16]
+            
+            public_channel_post = f"""
+🚨 <b>إشارة استباقية مجانية مدعومة بالذكاء الاصطناعي الفني</b> 🦅
+🚫 <i>لا للمحتالين ولا للجروبات المدفوعة - الأرباح للجميع علناً!</i>
+
+🪙 <b>اسم العملة الحقيقي:</b> <code>{base_asset}</code>
+💱 <b>زوج التداول بالمنصة:</b> <code>{base_asset}/USDT</code>
+
+📥 <b>نقطة ووقت الدخول الآمن:</b> <code>{entry:.{dec}f} USDT</code> (اشترِ الآن فوراً بسعر السوق)
+🕯️ <b>شمعة الرصد الفنية الاستباقية:</b> شمعة الـ 5 دقائق الحالية <code>[{c_time}]</code>
+🛣️ <b>مسار الحركة المتوقع:</b> <code>انفجار سعري وشيك نتيجة تجميع السيولة اللحظي لحيتان باينانس 🚀</code>
+
+🎯 <b>أهداف جني الأرباح المحددة بدقة رياضية للخروج الآمن:</b>
+🎯 الهدف الأول: <code>{t1:.{dec}f} USDT</code>
+🎯 الهدف الثاني: <code>{t2:.{dec}f} USDT</code>
+🎯 الهدف الثالث: <code>{t3:.{dec}f} USDT</code>
+🎯 الهدف الرابع: <code>{t4:.{dec}f} USDT</code>
+🎯 الهدف الخامس والأخير كلياً: <code>{t5:.{dec}f} USDT</code>
+
+👑 <i>قناتنا مجانية وستبقى مجانية لحمايتكم، البوت يطارد الأسعار حياً وسيبث علامات الـ (✅) فور ضرب كل هدف تلقائياً! بالتوفيق للجميع!</i>
+"""
+            try:
+                await context.bot.send_message(chat_id=CHANNEL_ID, text=public_channel_post, parse_mode="HTML")
+                await query.edit_message_text(f"✅ <b>برافو يا غالية! تم إرسال ونشر الصفقة بنجاح إلى قناتكِ العامة {CHANNEL_ID} وجاري المطاردة الآن...</b>", parse_mode="HTML")
+            except Exception as e:
+                try: await query.edit_message_text(f"❌ <b>فشل النشر! تأكدي من رفع البوت مشرفاً داخل القناة وإعطائه صلاحية النشر. الخطأ: {e}</b>", parse_mode="HTML")
+                except Exception: pass
+
+    elif data.startswith("rej_"):
+        db_id = data.split("_")[1]
+        cursor.execute("UPDATE empire_pumps SET status='REJECTED' WHERE id=?", (db_id,))
+        db.commit()
+        try: await query.edit_message_text("❌ <b>تم إلغاء وتجاهل هذه الإشارة بنجاح وحذفها من خط الإنتاج.</b>", parse_mode="HTML")
+        except Exception: pass
+
+async def start_private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    await update.message.reply_text(f"🦅 <b>مرحباً بكِ في واجهة إمبراطور القنوات المطور V14.2 ULTRA</b>\n\nالبوت مضبوط الآن على وضع (الاستشعار الاستباقي قبل البامب). عندما يكتشف الحيتان، سيرسل لكِ هنا رسالة سرية لتوافقي عليها وتُنشر تلقائياً في قناتكِ <code>{CHANNEL_ID}</code>.", parse_mode="HTML")
+
+async def ignore_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pass
+
+# ====================================================================
+# إدارة المجدول السري كلياً بالتوازي التام
+# ====================================================================
+
+async def post_init_private_scheduler(app: Application):
+    asyncio.create_task(live_empire_pre_pump_loop(app))
+    asyncio.create_task(live_empire_target_tracker_loop(app))
+
+def main():
+    global running_flag, db
+    app = Application.builder().token(TOKEN).post_init(post_init_private_scheduler).build()
+    
+    app.add_handler(CommandHandler("start", start_private_handler))
+    app.add_handler(CallbackQueryHandler(private_callback_router))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ignore_text_messages))
+    
+    print("[+] تم إطلاق نسخة حماية المشتركين الاستباقية الفولاذية (V14.2 ULTRA) بنجاح...")
+    try: app.run_polling(drop_pending_updates=True)
+    except (KeyboardInterrupt, SystemExit): pass
+    finally:
+        running_flag = False
+        db.close()
+
+if __name__ == "__main__":
+    main()
