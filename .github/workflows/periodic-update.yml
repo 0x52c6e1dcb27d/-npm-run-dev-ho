@@ -19,12 +19,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 # 🛑 المربع الأمني المركزي ومفاتيح الـ API والقنوات 🛑
 # ====================================================================
 
-TOKEN = "8840867382:AAE_SIyCYjQ_kvNlD9o1J1L6kRTwksWHrxs"          
+TOKEN = "884"          
 OWNER_ID = 8539408138                          # آيدي حسابكِ التليجرام الخاص للتحكم السري
 CHANNEL_ID = "@poirjdn"          # يوزر قناتكِ العامة (مثال: @my_crypto_channel)
 
-BINANCE_API_KEY = "3d37Pdun6FEUiajO6TinzY9jD97vL6YkPrjvZV9iqanefuDyAZV9ykScPF0G0kFO"
-BINANCE_SECRET_KEY = "Z4cAj9XOSA2ahNL1VCNHsUY1yRbtMaqlA31L6TNPKSVQZsfjsTKcmbvm9tDWip1P"
+BINANCE_API_KEY = "3"
+BINANCE_SECRET_KEY = "ZWip1P"
 
 # ====================================================================
 # إعداد قاعدة البيانات ونمط WAL لمنع تجميد الأزرار نهائياً
